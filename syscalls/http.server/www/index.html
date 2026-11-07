@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How an HTTP Server Works</title>
+<style>
+:root{
+  --bg:#07090f; --panel:#0e1320; --panel2:#131a2b; --line:#222c45;
+  --text:#d6deef; --dim:#8593b3; --cyan:#35e0ff; --green:#43f09a;
+  --amber:#ffc857; --red:#ff5d73; --violet:#a78bff;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;background:var(--bg);color:var(--text);
+  font:16px/1.65 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  background-image:
+    radial-gradient(900px 500px at 85% -10%,rgba(53,224,255,.10),transparent 60%),
+    radial-gradient(700px 500px at -5% 20%,rgba(167,139,255,.09),transparent 60%);
+}
+code,pre,.mono{font-family:var(--mono)}
+header.hero{padding:70px 20px 40px;text-align:center}
+.hero h1{
+  margin:0;font-size:clamp(2rem,6vw,3.8rem);letter-spacing:-.02em;
+  background:linear-gradient(90deg,var(--cyan),var(--violet),var(--green));
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.hero p{max-width:720px;margin:14px auto 0;color:var(--dim)}
+.hero .tag{display:inline-block;margin-top:18px;padding:4px 12px;border:1px solid var(--line);
+  border-radius:99px;font:13px var(--mono);color:var(--green)}
+nav{position:sticky;top:0;z-index:20;display:flex;gap:6px;flex-wrap:wrap;justify-content:center;
+  padding:10px;background:rgba(7,9,15,.85);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+nav a{color:var(--dim);text-decoration:none;font:13px var(--mono);padding:6px 12px;border-radius:8px}
+nav a:hover{color:var(--cyan);background:var(--panel)}
+main{max-width:1100px;margin:0 auto;padding:0 18px 80px}
+section{margin-top:64px}
+h2{font-size:1.6rem;margin:0 0 6px}
+h2 span{color:var(--cyan);font-family:var(--mono);font-size:.9rem;margin-right:8px}
+.lead{color:var(--dim);margin:0 0 22px;max-width:780px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(250px,1fr))}
+button{
+  font:13px var(--mono);color:var(--text);background:var(--panel2);border:1px solid var(--line);
+  padding:8px 14px;border-radius:9px;cursor:pointer;transition:.15s
+}
+button:hover{border-color:var(--cyan);color:var(--cyan)}
+button.primary{background:linear-gradient(90deg,#0f7f97,#4a3fb5);border-color:transparent;color:#fff}
+button.primary:hover{filter:brightness(1.2);color:#fff}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+/* lifecycle */
+.stage{position:relative;display:flex;align-items:center;justify-content:space-between;
+  padding:26px 10px;margin-bottom:14px}
+.node{width:130px;text-align:center;z-index:2}
+.node .box{height:84px;border-radius:14px;border:1px solid var(--line);background:var(--panel2);
+  display:grid;place-items:center;font-size:34px;transition:.3s}
+.node small{display:block;margin-top:8px;font:12px var(--mono);color:var(--dim)}
+.node.active .box{border-color:var(--cyan);box-shadow:0 0 22px rgba(53,224,255,.35)}
+.node.think .box{border-color:var(--amber);box-shadow:0 0 22px rgba(255,200,87,.35);animation:pulse 1s infinite}
+@keyframes pulse{50%{transform:scale(1.06)}}
+.track{position:relative;flex:1;height:4px;margin:0 -6px 22px;
+  background:repeating-linear-gradient(90deg,var(--line) 0 8px,transparent 8px 16px)}
+.pulse{position:absolute;top:50%;left:0;width:18px;height:18px;border-radius:50%;
+  transform:translate(-50%,-50%);background:var(--cyan);box-shadow:0 0 18px var(--cyan);opacity:0}
+.steps{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.chip{font:12px var(--mono);padding:5px 10px;border-radius:99px;border:1px solid var(--line);
+  background:var(--panel2);color:var(--dim);cursor:pointer}
+.chip.done{color:var(--green);border-color:#1d5b40}
+.chip.cur{color:#001018;background:var(--cyan);border-color:var(--cyan)}
+.detail h3{margin:0 0 6px;color:var(--cyan)}
+pre.data{margin:12px 0;padding:12px;border-radius:10px;background:#05070c;border:1px solid var(--line);
+  color:var(--green);overflow:auto;font-size:13px;min-height:62px;white-space:pre-wrap}
+.sec{border-left:3px solid var(--red);padding:8px 12px;background:rgba(255,93,115,.07);
+  border-radius:0 8px 8px 0;font-size:14px}
+.sec b{color:var(--red)}
+
+/* socket stepper */
+.code{background:#05070c;border:1px solid var(--line);border-radius:12px;padding:12px 0;font-size:13.5px;overflow:auto}
+.code div{padding:1px 16px;white-space:pre;color:#9fb0d6;border-left:3px solid transparent;transition:.2s}
+.code div.on{background:rgba(53,224,255,.12);border-left-color:var(--cyan);color:#fff}
+.k{color:var(--violet)}
+
+/* playground */
+textarea{width:100%;min-height:190px;resize:vertical;background:#05070c;color:var(--green);
+  border:1px solid var(--line);border-radius:10px;padding:12px;font:13.5px/1.5 var(--mono)}
+textarea:focus{outline:none;border-color:var(--cyan)}
+.out{background:#05070c;border:1px solid var(--line);border-radius:10px;padding:12px;
+  font:13.5px/1.5 var(--mono);white-space:pre-wrap;min-height:190px;overflow:auto}
+.st-2{color:var(--green)}.st-3{color:var(--amber)}.st-4{color:var(--red)}.st-5{color:#ff8a5d}
+.hdr{color:var(--violet)}
+.log{margin-top:10px;font:13px var(--mono);color:var(--dim)}
+.log li{margin:3px 0}
+.flag{color:var(--amber)}
+
+/* status explorer */
+.codes{display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:8px}
+.codes button{padding:10px 0;font-size:15px}
+.cls1:hover,.cls1.sel{border-color:#6aa7ff}.cls2.sel{border-color:var(--green);color:var(--green)}
+.cls3.sel{border-color:var(--amber);color:var(--amber)}.cls4.sel{border-color:var(--red);color:var(--red)}
+.cls5.sel{border-color:#ff8a5d;color:#ff8a5d}
+
+/* anatomy */
+.anat span{padding:1px 4px;border-radius:4px;cursor:help}
+.a1{background:rgba(53,224,255,.18)}.a2{background:rgba(67,240,154,.18)}
+.a3{background:rgba(255,200,87,.18)}.a4{background:rgba(167,139,255,.2)}
+.a5{background:rgba(255,93,115,.18)}
+.legend{display:flex;gap:10px;flex-wrap:wrap;font-size:13px;color:var(--dim);margin-top:10px}
+#tip{min-height:48px;margin-top:10px;color:var(--text)}
+footer{text-align:center;color:var(--dim);font:13px var(--mono);padding:30px}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="tag">$ curl -v http://example.com/</div>
+  <h1>How an HTTP Server Works</h1>
+  <p>A web server is a program that waits on a network port, reads text that follows strict rules,
+  decides what to do with it, and writes text back. This page walks through that entire life, one step at a time,
+  and shows where attackers poke at each step.</p>
+</header>
+
+<nav>
+  <a href="#life">1 Lifecycle</a>
+  <a href="#anatomy">2 Anatomy</a>
+  <a href="#socket">3 Server code</a>
+  <a href="#play">4 Playground</a>
+  <a href="#status">5 Status codes</a>
+  <a href="#attack">6 Attack surface</a>
+</nav>
+<main>
+
+<!-- 1 LIFECYCLE -->
+<section id="life">
+  <h2><span>01</span>The life of one request</h2>
+  <p class="lead">HTTP is a conversation over a reliable byte pipe (TCP). Before any HTTP text is sent, the browser must find the
+  server's address and open that pipe. Press <b>Play</b> or click the steps.</p>
+<img src="lol.png" alt="a lolcat" width = "100%" height = "100%">
+
+  <div class="card">
+    <div class="stage">
+      <div class="node" id="nC"><div class="box">💻</div><small>Browser (client)</small></div>
+      <div class="track"><div class="pulse" id="pulse"></div></div>
+      <div class="node" id="nS"><div class="box" id="peerIcon">🖥️</div><small id="peerName">Web server</small></div>
+    </div>
+    <div class="steps" id="steps"></div>
+    <div class="row" style="margin-bottom:12px">
+      <button class="primary" id="play">▶ Play</button>
+      <button id="prev">◀ Prev</button>
+      <button id="next">Next ▶</button>
+      <button id="reset">Reset</button>
+    </div>
+    <div class="detail">
+      <h3 id="dTitle"></h3>
+      <div id="dText"></div>
+      <pre class="data" id="dData"></pre>
+      <div class="sec" id="dSec"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 2 ANATOMY -->
+<section id="anatomy">
+  <h2><span>02</span>Anatomy of a request and a response</h2>
+  <p class="lead">HTTP/1.1 is plain text. Hover over any coloured part to learn what it is. Each line ends with the two bytes
+  <code>\r\n</code> (CRLF), and a blank line marks the end of the headers.</p>
+  <div class="grid g2">
+    <div class="card">
+      <b>Request (client to server)</b>
+<pre class="mono anat" style="margin:10px 0 0;white-space:pre-wrap;font-size:14px"><span class="a1" data-t="METHOD: what action you want. GET reads, POST sends data, PUT replaces, DELETE removes.">GET</span> <span class="a2" data-t="TARGET: the path and query string. This is the most attacked field of all, because it often maps to files or database queries.">/shop?item=42</span> <span class="a3" data-t="VERSION: which dialect of HTTP the client speaks.">HTTP/1.1</span>
+<span class="a4" data-t="HOST header: required in HTTP/1.1. One server (one IP) can host many websites, and this header picks which one.">Host: example.com</span>
+<span class="a4" data-t="USER-AGENT: names the client software. Trivial to fake, so never trust it for security.">User-Agent: curl/8.5</span>
+<span class="a4" data-t="COOKIE: carries your session id. Whoever holds it is treated as you (session hijacking).">Cookie: sid=9f3ac1</span>
+<span class="a5" data-t="BLANK LINE: CRLF CRLF. Everything after it is the body. Disagreement about where the headers end is the root of request smuggling.">&nbsp;</span>
+<span class="a1" data-t="BODY: optional payload (form data, JSON, files). Its length is described by Content-Length or by chunked encoding.">(body goes here for POST)</span></pre>
+    </div>
+    <div class="card">
+      <b>Response (server to client)</b>
+<pre class="mono anat" style="margin:10px 0 0;white-space:pre-wrap;font-size:14px"><span class="a3" data-t="VERSION echoed back.">HTTP/1.1</span> <span class="a1" data-t="STATUS CODE: a 3 digit machine readable result. 2xx ok, 3xx redirect, 4xx you erred, 5xx server erred.">200</span> <span class="a2" data-t="REASON PHRASE: human readable text. Clients ignore it.">OK</span>
+<span class="a4" data-t="CONTENT-TYPE: tells the browser how to interpret the body. A wrong type can turn data into executable script (MIME sniffing attacks).">Content-Type: text/html</span>
+<span class="a4" data-t="CONTENT-LENGTH: exact number of body bytes, so the client knows where the message ends.">Content-Length: 27</span>
+<span class="a4" data-t="SERVER header: reveals software and version. Great for attackers doing banner grabbing, so many admins remove it.">Server: nginx/1.24.0</span>
+<span class="a4" data-t="SET-COOKIE: gives the browser a session id. HttpOnly, Secure and SameSite flags defend it.">Set-Cookie: sid=9f3ac1; HttpOnly</span>
+<span class="a5" data-t="BLANK LINE: end of headers.">&nbsp;</span>
+<span class="a1" data-t="BODY: the actual page or data.">&lt;h1&gt;Welcome to the shop&lt;/h1&gt;</span></pre>
+    </div>
+  </div>
+  <div class="card" id="tip" style="margin-top:14px">Hover over a coloured token above.</div>
+</section>
+
+<!-- 3 SOCKET -->
+<section id="socket">
+  <h2><span>03</span>Inside the server: the socket loop</h2>
+  <p class="lead">A real server (nginx, Apache, Node, Flask) boils down to this C skeleton. Each line is a system call into the kernel.
+  Step through it.</p>
+  <div class="grid g2">
+    <div>
+      <div class="code" id="code"></div>
+      <div class="row" style="margin-top:10px">
+        <button id="cPrev">◀ Prev</button><button class="primary" id="cNext">Next ▶</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3 id="cTitle" style="margin-top:0;color:var(--cyan)"></h3>
+      <div id="cText"></div>
+      <div class="sec" id="cSec" style="margin-top:12px"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 4 PLAYGROUND -->
+<section id="play">
+  <h2><span>04</span>Playground: talk to a tiny server</h2>
+  <p class="lead">This page contains a mini HTTP server written in JavaScript. Edit the raw request, press <b>Send</b>, and watch the
+  server parse it, route it and build a response. Try the attack presets too.</p>
+  <div class="row" style="margin-bottom:10px" id="presets"></div>
+  <div class="grid g2">
+    <div>
+      <b class="mono" style="font-size:13px;color:var(--dim)">REQUEST (editable)</b>
+      <textarea id="req" spellcheck="false"></textarea>
+      <div class="row" style="margin-top:10px"><button class="primary" id="send">Send request ⏎</button></div>
+    </div>
+    <div>
+      <b class="mono" style="font-size:13px;color:var(--dim)">RESPONSE</b>
+      <div class="out" id="res">Press Send.</div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <b>Server's internal log</b>
+    <ul class="log" id="log"><li>waiting for a request...</li></ul>
+  </div>
+</section>
+
+<!-- 5 STATUS -->
+<section id="status">
+  <h2><span>05</span>Status code explorer</h2>
+  <p class="lead">The first digit tells you whose problem it is. Click a code.</p>
+  <div class="row" style="margin-bottom:12px" id="classBtns"></div>
+  <div class="grid g2">
+    <div class="codes" id="codes"></div>
+    <div class="card"><h3 id="sTitle" style="margin-top:0"></h3><div id="sText"></div>
+      <div class="sec" id="sSec" style="margin-top:12px"></div></div>
+  </div>
+</section>
+
+<!-- 6 ATTACK -->
+<section id="attack">
+  <h2><span>06</span>Attack surface map</h2>
+  <p class="lead">Every stage of the lifecycle is a place where something can go wrong. Click a card to flip its defence.</p>
+  <div class="grid g3" id="atk"></div>
+</section>
+
+</main>
+<footer>self contained · no external files · no network calls · everything you see runs in your browser</footer>
+
+<script>
+const $=s=>document.querySelector(s), el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
+
+/* ---------- 1. LIFECYCLE ---------- */
+const life=[
+ {n:'DNS',peer:'DNS resolver',ic:'📖',dir:'r',
+  t:'1. DNS lookup: name to number',
+  x:'You typed a name, but computers route packets by IP address. The browser asks a DNS resolver "what is the address of example.com?" The answer is cached for a while (its TTL).',
+  d:'Q: example.com  A ?\nA: example.com  A  93.184.216.34  (TTL 3600)',
+  s:'<b>DNS spoofing / cache poisoning:</b> a forged answer sends you to an attacker\'s server. Defences: DNSSEC, DNS over HTTPS, and TLS certificates that prove identity.'},
+ {n:'SYN',peer:'Web server',ic:'🖥️',dir:'r',
+  t:'2. TCP handshake, part 1: SYN',
+  x:'The browser connects to port 80 (HTTP) or 443 (HTTPS) on that IP. TCP needs both sides to agree on starting sequence numbers, so the client says "I want to talk, my number is X".',
+  d:'client -> server   [SYN]  seq=1000',
+  s:'<b>SYN flood:</b> an attacker sends thousands of SYNs and never finishes the handshake, filling the server\'s half open connection table. Defence: SYN cookies. Also, this is what nmap sees when it port scans you.'},
+ {n:'SYN-ACK',peer:'Web server',ic:'🖥️',dir:'l',
+  t:'3. TCP handshake, part 2: SYN-ACK',
+  x:'The server replied only because a program called listen() on that port. A closed port answers with RST instead, which is how scanners know what is open.',
+  d:'server -> client   [SYN, ACK]  seq=5000  ack=1001',
+  s:'<b>Port scanning:</b> SYN-ACK means open, RST means closed, silence means filtered by a firewall.'},
+ {n:'ACK',peer:'Web server',ic:'🖥️',dir:'r',
+  t:'4. TCP handshake, part 3: ACK',
+  x:'The client confirms. A reliable two way byte pipe now exists. The server\'s accept() call returns a brand new socket dedicated to this client.',
+  d:'client -> server   [ACK]  seq=1001  ack=5001\n--- connection ESTABLISHED ---',
+  s:'<b>Slowloris:</b> open many connections and send headers extremely slowly, holding the server\'s worker slots hostage. Defence: timeouts, limits per IP, event driven servers.'},
+ {n:'TLS',peer:'Web server',ic:'🔐',dir:'r',
+  t:'5. TLS handshake (HTTPS only)',
+  x:'For https:// the pipe is encrypted before any HTTP is sent. The server shows a certificate, both sides derive a shared secret, and everything after this is ciphertext. Plain http:// skips this step.',
+  d:'ClientHello  (ciphers, SNI=example.com)\nServerHello  + Certificate\nKey exchange -> shared session keys\n[Finished] both sides',
+  s:'<b>Downgrade and MITM:</b> on plain HTTP anyone on the path (cafe Wi-Fi) can read or edit traffic. HSTS tells browsers to refuse HTTP entirely.'},
+ {n:'Request',peer:'Web server',ic:'🖥️',dir:'r',
+  t:'6. The HTTP request travels',
+  x:'Now the actual text request is written into the pipe. It is just bytes: a request line, headers, a blank line, and an optional body.',
+  d:'GET /index.html HTTP/1.1\nHost: example.com\nUser-Agent: Mozilla/5.0\nAccept: text/html\nConnection: keep-alive\n',
+  s:'<b>Header injection / smuggling:</b> if a front proxy and the backend disagree on where this message ends, an attacker can hide a second request inside the first.'},
+ {n:'Process',peer:'Web server',ic:'⚙️',dir:'x',
+  t:'7. Server parses, routes and decides',
+  x:'recv() returns the bytes. The server (a) parses the request line and headers, (b) validates them, (c) routes the path to a file or handler function, (d) checks permissions, (e) produces content. Static file? It reads from the document root. Dynamic? It runs application code and maybe queries a database.',
+  d:'method  = GET\npath    = /index.html   -> map to /var/www/html/index.html\nversion = HTTP/1.1\nHost    = example.com  -> pick virtual host\nauth?   = none required\nresult  = file found, 1256 bytes',
+  s:'<b>Path traversal:</b> a request for <code>/../../etc/passwd</code> must be rejected after normalising the path. <b>Injection:</b> any input reaching SQL, shell or templates unchecked becomes code execution.'},
+ {n:'Response',peer:'Web server',ic:'🖥️',dir:'l',
+  t:'8. The HTTP response comes back',
+  x:'The server writes a status line, headers describing the body, a blank line, then the body. The browser reads Content-Length bytes, parses the HTML, and fires off more requests for the CSS, JS and images it finds.',
+  d:'HTTP/1.1 200 OK\nContent-Type: text/html; charset=utf-8\nContent-Length: 1256\nServer: nginx/1.24.0\n\n<!doctype html><html>...',
+  s:'<b>Information leaks:</b> Server banners, stack traces and verbose error pages tell attackers your exact software versions. Missing security headers (CSP, X-Content-Type-Options) weaken the browser\'s defences.'},
+ {n:'Close',peer:'Web server',ic:'🖥️',dir:'r',
+  t:'9. Keep-alive or close',
+  x:'HTTP/1.1 keeps the connection open by default so the next request skips the handshake. Either side can end it with a FIN. The server then calls close() on that client socket and loops back to accept() for the next visitor.',
+  d:'client -> server  [FIN, ACK]\nserver -> client  [FIN, ACK]\n--- connection CLOSED ---',
+  s:'<b>Resource exhaustion:</b> sockets are file descriptors. A server that forgets close() slowly runs out of them and stops accepting anyone.'}
+];
+let cur=0,timer=null;
+const stepsEl=$('#steps'),pulse=$('#pulse');
+life.forEach((s,i)=>{const c=el('span','chip',s.n);c.onclick=()=>go(i);stepsEl.appendChild(c)});
+function fire(dir){
+  const nS=$('#nS'),nC=$('#nC');
+  nS.classList.remove('think','active');nC.classList.remove('active');
+  if(dir==='x'){pulse.style.opacity=0;nS.classList.add('think');return}
+  pulse.style.transition='none';pulse.style.left=dir==='r'?'0%':'100%';pulse.style.opacity=1;
+  void pulse.offsetWidth;
+  pulse.style.transition='left .9s ease-in-out';pulse.style.left=dir==='r'?'100%':'0%';
+  (dir==='r'?nC:nS).classList.add('active');
+  setTimeout(()=>{pulse.style.opacity=0;(dir==='r'?nS:nC).classList.add('active');(dir==='r'?nC:nS).classList.remove('active')},900);
+}
+function go(i){
+  cur=Math.max(0,Math.min(life.length-1,i));const s=life[cur];
+  [...stepsEl.children].forEach((c,j)=>c.className='chip'+(j<cur?' done':'')+(j===cur?' cur':''));
+  $('#dTitle').textContent=s.t;$('#dText').textContent=s.x;$('#dData').textContent=s.d;$('#dSec').innerHTML='🛡️ '+s.s;
+  $('#peerName').textContent=s.peer;$('#peerIcon').textContent=s.ic;
+  fire(s.dir);
+}
+$('#next').onclick=()=>go(cur+1);$('#prev').onclick=()=>go(cur-1);
+$('#reset').onclick=()=>{stop();go(0)};
+function stop(){clearInterval(timer);timer=null;$('#play').textContent='▶ Play'}
+$('#play').onclick=()=>{
+  if(timer){stop();return}
+  $('#play').textContent='⏸ Pause';
+  timer=setInterval(()=>{if(cur>=life.length-1){stop();return}go(cur+1)},3800);
+};
+go(0);
+
+/* ---------- 2. ANATOMY TOOLTIP ---------- */
+document.querySelectorAll('.anat span').forEach(s=>{
+  s.addEventListener('mouseenter',()=>$('#tip').textContent=s.dataset.t);
+});
+
+/* ---------- 3. SOCKET STEPPER ---------- */
+const cs=[
+ {l:'int fd = socket(AF_INET, SOCK_STREAM, 0);',t:'socket(): ask the kernel for an endpoint',x:'AF_INET means IPv4. SOCK_STREAM means TCP (a reliable byte stream). You get back a file descriptor, a small integer, because on Unix everything is a file. At this point it is connected to nothing.',s:'Always check the return value. -1 means failure and errno says why.'},
+ {l:'setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);',t:'setsockopt(): allow quick restarts',x:'Without SO_REUSEADDR, restarting your server often fails with "Address already in use" for about a minute, because the old connections linger in TIME_WAIT.',s:'Harmless here, but it shows how one option changes who can bind a port.'},
+ {l:'bind(fd, (struct sockaddr*)&addr, sizeof addr);',t:'bind(): claim an address and port',x:'addr holds the IP (htonl(INADDR_ANY) means every interface) and the port (htons(80)). Network byte order is big endian, hence the htonl and htons conversions. Ports below 1024 need root on Linux.',s:'Binding to 0.0.0.0 exposes the service to the whole network. Binding to 127.0.0.1 keeps it local only. A very common misconfiguration.'},
+ {l:'listen(fd, 128);',t:'listen(): switch the socket into server mode',x:'The kernel now completes TCP handshakes on your behalf and parks finished connections in a queue (the backlog, here up to 128). That is why a port is "open" even before your code calls accept().',s:'A full backlog drops new clients. This queue is what SYN floods and connection floods try to overflow.'},
+ {l:'for (;;) {',t:'The forever loop',x:'A server never exits. It repeats: wait for a client, serve it, wait for the next. Real servers do this with threads, processes (fork) or event loops (epoll) so they can handle thousands of clients at once.',s:'One slow client in a single threaded loop blocks everyone else. That is exactly the weakness Slowloris abuses.'},
+ {l:'    int c = accept(fd, NULL, NULL);',t:'accept(): take one client from the queue',x:'Blocks until a client has finished the handshake, then returns a NEW socket c just for that client. The original fd keeps listening. Two kinds of socket, two jobs.',s:'Each accepted socket uses a file descriptor. The per process limit (ulimit -n) caps how many clients you can hold open.'},
+ {l:'    ssize_t n = recv(c, buf, sizeof buf, 0);',t:'recv(): read the request bytes',x:'Copies up to sizeof buf bytes of the request into your buffer. Note: TCP is a stream, so one recv may return half a request or two requests glued together. Real servers loop until they see the blank line.',s:'Classic bug zone. If you copy n bytes into a smaller buffer, or trust a client supplied length, you get a buffer overflow (the Heartbleed style of bug).'},
+ {l:'    parse_request(buf, n, &req);',t:'Parse and validate',x:'Split at the first space and CRLF, read the method, path and version, then each "Name: value" header until the blank line. Reject anything malformed with 400 Bad Request.',s:'Parsers are the heart of web vulnerabilities. Two parsers that disagree about the same bytes (proxy vs backend) enable request smuggling.'},
+ {l:'    build_response(&req, out, &len);',t:'Route and build the response',x:'Normalise the path, map it to a file or handler, check permissions, then assemble status line, headers, blank line and body into one buffer.',s:'Normalise before checking. Decode %2e%2e, collapse "..", resolve symlinks, then verify the final path is still inside the document root.'},
+ {l:'    send(c, out, len, 0);',t:'send(): write the response',x:'Pushes the bytes back through the kernel to the client. Like recv, send may write fewer bytes than asked, so careful servers loop until everything is sent.',s:'Never put raw user input into headers without stripping CR and LF, or the attacker injects their own headers (response splitting).'},
+ {l:'    close(c);',t:'close(): hang up on this client',x:'Releases the client socket and sends the FIN. With keep-alive you would instead loop back to recv() for the next request on the same connection.',s:'Forgetting close() leaks file descriptors until accept() starts failing, a quiet denial of service.'},
+ {l:'}',t:'Back to accept()',x:'The loop runs again and the server waits for the next visitor. This cycle is the whole job of a web server. Everything else (TLS, caching, compression, HTTP/2) is layered on top.',s:'Servers run for months, so small leaks and unhandled errors matter far more than in a short script.'}
+];
+let ci=0;const codeEl=$('#code');
+cs.forEach(c=>{const d=el('div');d.textContent=c.l;codeEl.appendChild(d)});
+function cgo(i){
+  ci=Math.max(0,Math.min(cs.length-1,i));
+  [...codeEl.children].forEach((d,j)=>d.classList.toggle('on',j===ci));
+  $('#cTitle').textContent=cs[ci].t;$('#cText').textContent=cs[ci].x;$('#cSec').innerHTML='🛡️ '+cs[ci].s;
+}
+$('#cNext').onclick=()=>cgo(ci+1);$('#cPrev').onclick=()=>cgo(ci-1);cgo(0);
+
+/* ---------- 4. PLAYGROUND: a mini HTTP server ---------- */
+const DOCROOT='/var/www/html';
+const routes={
+  '/':{type:'text/html',body:'<h1>Welcome</h1><a href="/about">About</a>'},
+  '/about':{type:'text/html',body:'<h1>About</h1><p>A tiny server in your browser.</p>'},
+  '/api/time':()=>({type:'application/json',body:JSON.stringify({utc:new Date().toISOString()})})
+};
+const REASON={200:'OK',201:'Created',400:'Bad Request',401:'Unauthorized',403:'Forbidden',404:'Not Found',405:'Method Not Allowed',505:'HTTP Version Not Supported'};
+const presets={
+ 'GET /':'GET / HTTP/1.1\r\nHost: example.com\r\nUser-Agent: playground\r\n\r\n',
+ 'GET /api/time':'GET /api/time HTTP/1.1\r\nHost: example.com\r\nAccept: application/json\r\n\r\n',
+ 'POST /login':'POST /login HTTP/1.1\r\nHost: example.com\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 27\r\n\r\nuser=admin&pass=letmein123',
+ '404 missing':'GET /nothing-here HTTP/1.1\r\nHost: example.com\r\n\r\n',
+ 'No Host header':'GET / HTTP/1.1\r\nUser-Agent: playground\r\n\r\n',
+ 'Weird method':'BREW /coffee HTTP/1.1\r\nHost: example.com\r\n\r\n',
+ '⚠ Path traversal':'GET /../../etc/passwd HTTP/1.1\r\nHost: example.com\r\n\r\n',
+ '⚠ Encoded traversal':'GET /%2e%2e/%2e%2e/etc/shadow HTTP/1.1\r\nHost: example.com\r\n\r\n',
+ '⚠ Header injection':'GET /about HTTP/1.1\r\nHost: example.com\r\nX-Forwarded-For: 1.2.3.4\r\nCookie: sid=1\r\nX-Admin: true\r\n\r\n'
+};
+const presetsEl=$('#presets');
+Object.keys(presets).forEach(k=>{const b=el('button',null,k);b.onclick=()=>{$('#req').value=presets[k].replace(/\r\n/g,'\n');handle()};presetsEl.appendChild(b)});
+$('#req').value=presets['GET /'].replace(/\r\n/g,'\n');
+
+function serve(raw){
+  const log=[];const L=m=>log.push(m);
+  const text=raw.replace(/\r?\n/g,'\n');
+  const [head,...bodyParts]=text.split('\n\n');const body=bodyParts.join('\n\n');
+  const lines=head.split('\n');
+  const parts=lines[0].trim().split(/\s+/);
+  L('recv(): '+raw.length+' bytes received, splitting at the blank line');
+  if(parts.length!==3){L('request line must have 3 parts, got '+parts.length);return mk(400,'Malformed request line',log)}
+  const [method,target,ver]=parts;
+  L('request line parsed: method='+method+'  target='+target+'  version='+ver);
+  if(!/^HTTP\/1\.[01]$/.test(ver)){L('unsupported version');return mk(505,'Only HTTP/1.0 and 1.1 are supported',log)}
+  const h={};
+  for(const ln of lines.slice(1)){const i=ln.indexOf(':');if(i<1){L('bad header line: '+ln);return mk(400,'Malformed header',log)}h[ln.slice(0,i).trim().toLowerCase()]=ln.slice(i+1).trim()}
+  L(Object.keys(h).length+' header(s) parsed');
+  if(ver==='HTTP/1.1'&&!h.host){L('HTTP/1.1 requires a Host header');return mk(400,'Host header required',log)}
+  if(h['x-admin']){L('<span class="flag">⚠ client supplied an X-Admin header. Never trust client headers for authorisation. Ignored.</span>')}
+  if(!['GET','POST','HEAD'].includes(method)){L('method '+method+' is not implemented');return mk(405,'Method not allowed',log,{Allow:'GET, POST, HEAD'})}
+  let path=target.split('?')[0],dec;
+  try{dec=decodeURIComponent(path)}catch(e){L('bad percent encoding');return mk(400,'Bad encoding',log)}
+  if(dec!==path)L('percent decoding: '+path+'  ->  '+dec);
+  const stack=[];let escaped=false;
+  dec.split('/').forEach(seg=>{if(seg===''||seg==='.')return;if(seg==='..'){if(stack.length)stack.pop();else escaped=true}else stack.push(seg)});
+  if(escaped||dec.includes('..')&&stack.length===0&&dec!=='/'){
+    L('<span class="flag">⚠ PATH TRAVERSAL: the path tries to climb above the document root ('+DOCROOT+')</span>');
+    L('defence: normalise first, then verify result starts with the docroot. Rejecting.');
+    return mk(403,'Forbidden',log);
+  }
+  const norm='/'+stack.join('/');
+  L('normalised path: '+norm+'  ->  '+DOCROOT+norm);
+  if(method==='POST'&&norm==='/login'){
+    L('POST body: '+body.length+' bytes -> '+(body||'(empty)'));
+    L('<span class="flag">⚠ credentials sent over plain HTTP are readable by anyone on the network path. Use HTTPS.</span>');
+    return mk(401,'Invalid credentials',log,{'WWW-Authenticate':'Basic realm="demo"'});
+  }
+  let r=routes[norm];
+  if(typeof r==='function')r=r();
+  if(!r){L('no route and no file -> 404');return mk(404,'<h1>404</h1><p>Nothing at '+norm.replace(/[<>&]/g,'')+'</p>',log,{},'text/html')}
+  L('route matched -> 200');
+  return mk(200,r.body,log,{},r.type);
+}
+function mk(code,body,log,extra={},type='text/plain'){
+  const headers=Object.assign({'Date':new Date().toUTCString(),'Server':'mini-http/0.1','Content-Type':type+'; charset=utf-8','Content-Length':new TextEncoder().encode(body).length,'Connection':'keep-alive'},extra);
+  return {code,reason:REASON[code]||'',headers,body,log};
+}
+function handle(){
+  const r=serve($('#req').value);
+  const out=$('#res');out.textContent='';
+  const sl=el('div','st-'+String(r.code)[0],'HTTP/1.1 '+r.code+' '+r.reason);sl.style.fontWeight='bold';out.appendChild(sl);
+  Object.entries(r.headers).forEach(([k,v])=>{const d=el('div');const a=el('span','hdr',k+': ');d.appendChild(a);d.appendChild(document.createTextNode(v));out.appendChild(d)});
+  out.appendChild(el('div',null,' '));
+  out.appendChild(el('div',null,r.body));
+  const lg=$('#log');lg.innerHTML='';
+  r.log.forEach((m,i)=>{const li=el('li');li.innerHTML=(i+1)+'. '+m;lg.appendChild(li)});
+}
+$('#send').onclick=handle;
+handle();
+
+/* ---------- 5. STATUS CODES ---------- */
+const SC=[
+ [100,'Continue','Server got the headers, client may send the body.','Used by Expect: 100-continue. Rarely a risk.'],
+ [101,'Switching Protocols','Connection upgrades, e.g. to WebSocket.','Cross site WebSocket hijacking if Origin is not checked.'],
+ [200,'OK','Success, body contains the result.','A 200 on a path that should be private is a finding (broken access control).'],
+ [201,'Created','A new resource was created (usually after POST).','Check that users cannot create resources they should not.'],
+ [204,'No Content','Success but nothing to send back.','Handy for blind probing: behaviour differences leak information.'],
+ [301,'Moved Permanently','Resource has a new permanent URL.','Open redirects: if the target comes from user input, attackers use your domain in phishing.'],
+ [302,'Found','Temporary redirect.','Same open redirect risk. Also common after login.'],
+ [304,'Not Modified','Use your cached copy.','Conditional requests can reveal whether a file changed.'],
+ [400,'Bad Request','Server could not parse the request.','Fuzzers hammer parsers to provoke 400s and then crashes (500s).'],
+ [401,'Unauthorized','You must authenticate first.','Different 401 messages for "no such user" vs "wrong password" enable username enumeration.'],
+ [403,'Forbidden','Authenticated or not, you may not access this.','Often bypassed by changing method, adding X-Forwarded-For, or path tricks (/admin/..;/).'],
+ [404,'Not Found','No such resource.','Directory brute forcers (gobuster, ffuf) just count which paths do NOT return 404.'],
+ [405,'Method Not Allowed','Path exists but not for this method.','Reveals the path exists. Test other methods.'],
+ [418,"I'm a teapot",'An April Fools joke from RFC 2324.','Sometimes used by WAFs or honeypots as a fingerprint.'],
+ [429,'Too Many Requests','Rate limit hit.','Defence against brute force. Weak limits keyed on a spoofable header are bypassable.'],
+ [500,'Internal Server Error','The server code crashed.','Stack traces in 500 pages leak paths, versions and sometimes secrets. A 500 after odd input hints at an injection point.'],
+ [502,'Bad Gateway','A proxy got a bad answer from the backend.','Reveals a reverse proxy architecture. Prime request smuggling territory.'],
+ [503,'Service Unavailable','Overloaded or in maintenance.','What a successful DoS looks like from outside.'],
+ [505,'HTTP Version Not Supported','Server does not speak that HTTP version.','Banner and capability fingerprinting.']
+];
+const CL={1:'1xx Informational',2:'2xx Success',3:'3xx Redirect',4:'4xx Client error',5:'5xx Server error'};
+let selClass=0;
+const cb=$('#classBtns');
+[0,1,2,3,4,5].forEach(c=>{const b=el('button',null,c?CL[c]:'All');b.onclick=()=>{selClass=c;renderCodes()};cb.appendChild(b)});
+function showCode(c){
+  $('#sTitle').textContent=c[0]+' '+c[1];$('#sTitle').style.color=['','#6aa7ff','var(--green)','var(--amber)','var(--red)','#ff8a5d'][Math.floor(c[0]/100)];
+  $('#sText').textContent=c[2];$('#sSec').innerHTML='🛡️ <b>Security angle:</b> '+c[3];
+  document.querySelectorAll('#codes button').forEach(b=>b.classList.toggle('sel',b.textContent==c[0]));
+}
+function renderCodes(){
+  const box=$('#codes');box.innerHTML='';
+  SC.filter(c=>!selClass||Math.floor(c[0]/100)===selClass).forEach(c=>{
+    const b=el('button','cls'+Math.floor(c[0]/100),c[0]);b.onclick=()=>showCode(c);box.appendChild(b);
+  });
+  const first=SC.find(c=>!selClass||Math.floor(c[0]/100)===selClass);if(first)showCode(first);
+}
+renderCodes();
+
+/* ---------- 6. ATTACK SURFACE ---------- */
+const AT=[
+ ['🧭','Path traversal','Ask for ../../etc/passwd to escape the web root and read arbitrary files.','Normalise and decode first, then confirm the real path stays inside the root. Run the server as an unprivileged user.'],
+ ['💉','Injection (SQLi, XSS, command)','User input reaches a database, shell or the page without being treated as data.','Parameterised queries, output encoding, input validation, a Content-Security-Policy header.'],
+ ['🧩','Request smuggling','Proxy and backend disagree about where one request ends (Content-Length vs Transfer-Encoding), so a hidden request rides along.','Use the same parser everywhere, reject ambiguous messages, prefer HTTP/2 end to end.'],
+ ['✂️','CRLF / header injection','Injecting \\r\\n into a value lets the attacker add headers or even a fake response.','Strip or reject CR and LF in anything placed in headers.'],
+ ['🐌','Slowloris and floods','Hold connections open with slow sends, or flood with SYNs, until real users cannot get in.','Timeouts, per IP limits, SYN cookies, reverse proxy or CDN, event driven servers.'],
+ ['🪪','Banner grabbing','Server: Apache/2.4.49 tells attackers exactly which known CVEs to try.','Minimise version info, patch quickly, assume the attacker knows anyway.'],
+ ['🪞','SSRF','Tricking the server into making requests for you, for example to 169.254.169.254 cloud metadata.','Allow lists of destinations, block internal ranges, resolve the name once and pin the IP.'],
+ ['📡','Plain HTTP sniffing','Passwords and cookies cross the network as readable text; anyone in the middle can edit pages too.','HTTPS everywhere, HSTS, Secure and HttpOnly cookies.'],
+ ['🔓','Broken access control','The server answers 200 for data the user should not see, e.g. /invoice?id=1001 then 1002.','Check authorisation on every request on the server side. Never trust client headers or hidden fields.']
+];
+const atk=$('#atk');
+AT.forEach(a=>{
+  const c=el('div','card');c.style.cursor='pointer';
+  c.innerHTML='<div style="font-size:26px"></div><b></b><p style="color:var(--dim);margin:6px 0 0"></p><div class="sec" style="display:none;margin-top:10px;border-color:var(--green);background:rgba(67,240,154,.07)"></div>';
+  c.children[0].textContent=a[0];c.children[1].textContent=a[1];c.children[2].textContent=a[2];
+  c.children[3].innerHTML='<b style="color:var(--green)">Defence:</b> ';c.children[3].appendChild(document.createTextNode(a[3]));
+  c.onclick=()=>{const d=c.children[3];d.style.display=d.style.display==='none'?'block':'none'};
+  atk.appendChild(c);
+});
+</script>
+</body>
+</html>
