@@ -17,11 +17,13 @@ int main(void) {
 
     // create a socket;
     int sock_fd;
+    // every open file is associated with a file descriptor.
     // assign and check the return value.
     if ((sock_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
         perror("socket failed => sock_fd");
         exit(EXIT_FAILURE);
     }
+    printf("AF_INET : %d\n", AF_INET);
 
     // print the socket file descriptor.
     printf("socket fd => %d\n", sock_fd);
