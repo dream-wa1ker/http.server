@@ -18,9 +18,9 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
-
 //---------------------------------------------------------------------------------------
 //--------------------------------- struct defintions and enums -------------------------
 //---------------------------------------------------------------------------------------
@@ -31,6 +31,7 @@
 #define MAX_REQUEST_LEN 4096
 #define CVE_IS_FIXED true
 #define ROOTDIR "./www"
+#define CLIENT_TIMEOUT 10000
 
 // define the mime struct, which is a match for extension and mimetype;
 typedef struct {
@@ -80,8 +81,10 @@ int response_error(int clientfd, const char *msg, char *version, http_status sta
 int read_into_buffer(int filefd, char *buffer, size_t size);
 int read_file(const char *path, char *buffer, size_t size);
 bool starts_with(char *string, char *substring);
+bool is_requesting_hidden(const char *path);
 bool file_exists(const char *path);
 bool file_is_regular(const char *path);
+bool set_socket_timeout(int client_fd, int timeout_ms);
 off_t get_size(const char *path);
 const char *get_mime_type(char *filepath);
 
@@ -111,6 +114,9 @@ void handle_client(int sockfd) {
             panic(sockfd, "accept failed");
         }
 
+        if (!set_socket_timeout(clientfd, CLIENT_TIMEOUT)) {
+            fprintf(stderr, "[server] : unable to set timeout for client, client may potentially block the other clients...\n");
+        }
         // print client file descriptor;
         printf("[server] : client fd => %d\n", clientfd);
 
@@ -149,7 +155,7 @@ void handle_client(int sockfd) {
         }
 
         // if the path requests for a file starting with ., put a forbidden response.
-        if (strncmp(&line.path[1], ".", 1) == 0 && strncmp(&line.path[2], ".", 1) != 0) {
+        if (is_requesting_hidden(line.path)) {
             response_error(clientfd, "Error : Accessing Hidden Files is Forbidden...", line.version, HTTP_FORBIDDEN);
             close(clientfd);
             continue;
@@ -439,11 +445,28 @@ int response_error(int clientfd, const char *msg, char *version, http_status sta
 
 //============================================================================= parse_request_line
 void parse_request_line(char *request, request_line *line) {
-    if (sscanf(request, "%15s %255s %15s", line->method, line->path, line->version) != 3) {
-        memset(line->path, 0, sizeof(line->path));
-        memset(line->method, 0, sizeof(line->method));
-        memset(line->version, 0, sizeof(line->version));
+    memset(line, 0, sizeof(*line));
+    char *eol;
+    if ((eol = strstr(request, "\r\n")) == NULL) {
+        return;
     }
+    size_t len = eol - request;
+    char *req_line = malloc(len + 1);
+    if (!req_line) {
+        return;
+    }
+    memcpy(req_line, request, len);
+    req_line[len] = '\0';
+
+    int bytes_read = 0;
+    // %n will store the number of characters processed till that point.
+    // if there were some garbage at the req_line, we will consider it as invalid request header;
+    if (sscanf(req_line, "%15s %255s %15s %n", line->method, line->path, line->version, &bytes_read) != 3 || req_line[bytes_read] != '\0') {
+        free(req_line);
+        memset(line, 0, sizeof(*line));
+        return;
+    }
+    free(req_line);
 }
 
 //========================================================================= read_file
@@ -620,6 +643,7 @@ const char *get_mime_type(char *filepath) {
     return "application/octet-stream";
 }
 
+//=============================================================== starts_with
 bool starts_with(char *string, char *substring) {
     size_t stringlen = strlen(string);
     size_t substrlen = strlen(substring);
@@ -630,5 +654,56 @@ bool starts_with(char *string, char *substring) {
         if (string[i] != substring[i])
             return false;
     }
+    return true;
+}
+
+//================================================================================== is_requesting_hidden
+// Returns true if the path contains a hidden segment (e.g., /.git, /...../)
+// safely ignoring standard structural paths like "." or ".."
+bool is_requesting_hidden(const char *path) {
+    if (path == NULL)
+        return false;
+
+    for (size_t i = 0; path[i] != '\0'; i++) {
+        // Find the start of a segment: either at the beginning or immediately following a '/'
+        if (i == 0 || path[i - 1] == '/') {
+            // Check if this segment starts with a dot
+            if (path[i] == '.') {
+                const char *segment = &path[i];
+
+                // Safely skip standard "." and ".." structural directories
+                if (strcmp(segment, ".") == 0 || strncmp(segment, "./", 2) == 0)
+                    continue;
+                if (strcmp(segment, "..") == 0 || strncmp(segment, "../", 3) == 0)
+                    continue;
+
+                // Any other leading dot (like ".git" or ".....") is a hidden path
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+//================================================================== set_socket_timeout
+bool set_socket_timeout(int client_fd, int timeout_ms) {
+    struct timeval tv;
+
+    // convert milliseconds to seconds and microseconds
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+    // set receive timeout
+    if (setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        perror("setsockopt SO_RCVTIMEO failed");
+        return false;
+    }
+
+    // optionally set send timeout as well
+    if (setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+        perror("setsockopt SO_SNDTIMEO failed");
+        return false;
+    }
+
     return true;
 }
