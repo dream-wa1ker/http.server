@@ -30,6 +30,7 @@
 #define BACKLOG 10
 #define MAX_REQUEST_LEN 4096
 #define CVE_IS_FIXED true
+#define ROOTDIR "./www"
 
 // define the mime struct, which is a match for extension and mimetype;
 typedef struct {
@@ -78,6 +79,7 @@ int send_response(int clientfd, const char *response_header, size_t send_size);
 int response_error(int clientfd, const char *msg, char *version, http_status status);
 int read_into_buffer(int filefd, char *buffer, size_t size);
 int read_file(const char *path, char *buffer, size_t size);
+bool starts_with(char *string, char *substring);
 bool file_exists(const char *path);
 bool file_is_regular(const char *path);
 off_t get_size(const char *path);
@@ -146,15 +148,8 @@ void handle_client(int sockfd) {
             continue;
         }
 
-        // if the path does not start with /, put a response error.
-        if (strncmp(&line.path[0], "/", 1) != 0) {
-            response_error(clientfd, "Error : Invalid Filepath, the server requires path to start with /", line.version, HTTP_BAD_REQUEST);
-            close(clientfd);
-            continue;
-        }
-
         // if the path requests for a file starting with ., put a forbidden response.
-        if (strncmp(&line.path[1], ".", 1) == 0) {
+        if (strncmp(&line.path[1], ".", 1) == 0 && strncmp(&line.path[2], ".", 1) != 0) {
             response_error(clientfd, "Error : Accessing Hidden Files is Forbidden...", line.version, HTTP_FORBIDDEN);
             close(clientfd);
             continue;
@@ -174,9 +169,16 @@ void handle_client(int sockfd) {
             strcpy(line.path, "/index.html");
         }
 
-        int path_length = snprintf(NULL, 0, "./www%s", line.path);
+        int path_length = snprintf(NULL, 0, "%s%s", ROOTDIR, line.path);
         char filepath[(size_t)path_length + 1];
-        snprintf(filepath, sizeof(filepath), "./www%s", line.path);
+        snprintf(filepath, sizeof(filepath), "%s%s", ROOTDIR, line.path);
+
+        // if the path does not start with root directory, put a response error.
+        if (!starts_with(filepath, ROOTDIR "/")) {
+            response_error(clientfd, "Error : Invalid Filepath, Are you trying something?", line.version, HTTP_BAD_REQUEST);
+            close(clientfd);
+            continue;
+        }
 
         // check if the file exits.
         if (!file_exists(filepath) || !file_is_regular(filepath)) {
@@ -616,4 +618,17 @@ const char *get_mime_type(char *filepath) {
         }
     }
     return "application/octet-stream";
+}
+
+bool starts_with(char *string, char *substring) {
+    size_t stringlen = strlen(string);
+    size_t substrlen = strlen(substring);
+    if (stringlen < substrlen) {
+        return false;
+    }
+    for (size_t i = 0; i < substrlen; i++) {
+        if (string[i] != substring[i])
+            return false;
+    }
+    return true;
 }
