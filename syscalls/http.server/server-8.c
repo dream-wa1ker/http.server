@@ -146,6 +146,20 @@ void handle_client(int sockfd) {
             continue;
         }
 
+        // if the path does not start with /, put a response error.
+        if (strncmp(&line.path[0], "/", 1) != 0) {
+            response_error(clientfd, "Error : Invalid Filepath, the server requires path to start with /", line.version, HTTP_BAD_REQUEST);
+            close(clientfd);
+            continue;
+        }
+
+        // if the path requests for a file starting with ., put a forbidden response.
+        if (strncmp(&line.path[1], ".", 1) == 0) {
+            response_error(clientfd, "Error : Accessing Hidden Files is Forbidden...", line.version, HTTP_FORBIDDEN);
+            close(clientfd);
+            continue;
+        }
+
         // this is a temporary fix for the path traversal cve that is mentioned in the cyber risk 1 below : only if CVE_IS_FIXED is true;
         // run the server from a server directory, and serve from the www directory.
         if (CVE_IS_FIXED) {
@@ -238,6 +252,8 @@ void handle_client(int sockfd) {
             fprintf(stderr, "failed to send response body\n");
         }
 
+        // free the body and close the connection.
+        free(body);
         close(clientfd);
     }
 }
@@ -496,11 +512,12 @@ off_t get_size(const char *path) {
 const char *get_mime_type(char *filepath) {
     // search the string from reverse;
     char *ptr = strrchr(filepath, '.');
-    while (*ptr == ' ' || *ptr == '\t')
-        ptr++;
+    // check if . is found.
     if (ptr == NULL) {
         return "application/octet-stream";
     }
+    while (*ptr == ' ' || *ptr == '\t')
+        ptr++;
 
     typedef const struct {
         const char *ext;
